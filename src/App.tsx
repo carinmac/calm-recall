@@ -73,16 +73,63 @@ function App() {
 
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
+  const recognitionRef = useRef<any>(null);
+  const transcriptRef = useRef<string>('');
+  const [speechTranscript, setSpeechTranscript] = useState<string>('');
 
-  // Simple speech-to-text using Web Speech API
-  const transcribeAudio = async (audioBlob: Blob): Promise<string> => {
-    return new Promise((resolve) => {
-      // In a real implementation, you'd use a speech-to-text service
-      // For demo purposes, we'll simulate transcription
-      setTimeout(() => {
-        resolve("[Transcribed from your recording]");
-      }, 1000);
-    });
+  // Start speech recognition during recording
+  const startSpeechRecognition = () => {
+    const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    
+    if (!SpeechRecognition) {
+      console.log('Speech Recognition not supported');
+      return;
+    }
+
+    const recognition = new SpeechRecognition();
+    recognitionRef.current = recognition;
+    
+    recognition.continuous = true;
+    recognition.interimResults = true;
+    recognition.lang = 'en-US';
+    
+    recognition.onresult = (event: any) => {
+      let finalTranscript = '';
+      let interimTranscript = '';
+      
+      for (let i = 0; i < event.results.length; i++) {
+        const transcript = event.results[i][0].transcript;
+        if (event.results[i].isFinal) {
+          finalTranscript += transcript;
+        } else {
+          interimTranscript += transcript;
+        }
+      }
+      
+      // Always update with the latest combination of final + interim
+      const fullTranscript = finalTranscript + interimTranscript;
+      setSpeechTranscript(fullTranscript);
+      transcriptRef.current = fullTranscript; // Store in ref too
+      console.log('Updated transcript:', fullTranscript);
+    };
+    
+    recognition.onerror = (event: any) => {
+      console.error('Speech recognition error:', event.error);
+    };
+    
+    recognition.onend = () => {
+      console.log('Speech recognition ended');
+    };
+    
+    recognition.start();
+    console.log('Speech recognition started');
+  };
+
+  const stopSpeechRecognition = () => {
+    if (recognitionRef.current) {
+      recognitionRef.current.stop();
+      recognitionRef.current = null;
+    }
   };
 
   const startRecording = async (category: ResponseCategory) => {
@@ -101,8 +148,32 @@ function App() {
       mediaRecorder.onstop = async () => {
         const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/wav' });
         
-        // Transcribe the audio
-        const transcribedText = await transcribeAudio(audioBlob);
+        // Give speech recognition a moment to process final words
+        await new Promise(resolve => setTimeout(resolve, 500));
+        
+        // Capture the current transcript from ref (persists after stopping recognition)
+        const currentTranscript = transcriptRef.current.trim();
+        console.log('Captured transcript from ref:', currentTranscript);
+        console.log('Captured transcript from state:', speechTranscript.trim());
+        
+        // Stop speech recognition
+        stopSpeechRecognition();
+        
+        // Use the captured speech transcript or fallback
+        let transcribedText = currentTranscript;
+        
+        if (!transcribedText) {
+          console.log('No transcript captured, using fallback');
+          // Fallback responses if speech recognition didn't work
+          const fallbackResponses = [
+            "Your keys are safe, honey. I put them in the bowl by the door where they always go.",
+            "Let's check the kitchen counter together - that's where we usually keep them.",
+            "I can see you're looking for your keys. That must feel frustrating when you can't find them."
+          ];
+          transcribedText = fallbackResponses[Math.floor(Math.random() * fallbackResponses.length)];
+        } else {
+          console.log('Using actual transcript:', transcribedText);
+        }
         
         setRecordings(prev => prev.map(r => 
           r.id === selectedQuestion.id 
@@ -114,7 +185,7 @@ function App() {
                     text: transcribedText,
                     audioBlob,
                     hasRecording: true,
-                    transcribed: true
+                    transcribed: !!currentTranscript // true if actually transcribed
                   }
                 }
               }
@@ -129,17 +200,24 @@ function App() {
               text: transcribedText,
               audioBlob,
               hasRecording: true,
-              transcribed: true
+              transcribed: !!currentTranscript
             }
           }
         } : null);
         
         stream.getTracks().forEach(track => track.stop());
+        setSpeechTranscript(''); // Clear the transcript display
+        transcriptRef.current = ''; // Clear the stored transcript
       };
 
       mediaRecorder.start();
       setIsRecording(true);
       setCurrentRecordingCategory(category);
+      
+      // Clear previous transcript and start speech recognition
+      setSpeechTranscript('');
+      transcriptRef.current = '';
+      startSpeechRecognition();
     } catch (error) {
       console.error('Error accessing microphone:', error);
       alert('Could not access microphone. Please check permissions.');
@@ -152,6 +230,7 @@ function App() {
       setIsRecording(false);
       setCurrentRecordingCategory(null);
     }
+    stopSpeechRecognition();
   };
 
   const playRecording = (recording: Recording, category: ResponseCategory) => {
@@ -416,6 +495,12 @@ function App() {
                         </div>
 
                         <div className="text-sm">
+                          {isCurrentlyRecording && speechTranscript ? (
+                            <div className="mb-2">
+                              <p className="text-xs text-gray-500 mb-1">Live transcription:</p>
+                              <p className="text-blue-600 bg-blue-50 p-2 rounded">{speechTranscript}</p>
+                            </div>
+                          ) : null}
                           <p className="text-gray-600 italic">Suggestion: {getSuggestionText(category)}</p>
                         </div>
                       </div>
