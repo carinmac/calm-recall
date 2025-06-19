@@ -5,9 +5,9 @@ interface Recording {
   id: number;
   question: string;
   responses: {
-    comfort?: { text: string; audioBlob?: Blob; hasRecording: boolean };
-    redirect?: { text: string; audioBlob?: Blob; hasRecording: boolean };
-    acknowledge?: { text: string; audioBlob?: Blob; hasRecording: boolean };
+    comfort?: { text: string; audioBlob?: Blob; hasRecording: boolean; transcribed?: boolean };
+    redirect?: { text: string; audioBlob?: Blob; hasRecording: boolean; transcribed?: boolean };
+    acknowledge?: { text: string; audioBlob?: Blob; hasRecording: boolean; transcribed?: boolean };
   };
   triggerCount: number;
   lastTriggered?: Date;
@@ -28,9 +28,9 @@ function App() {
       id: 1, 
       question: "Where are my keys?", 
       responses: {
-        comfort: { text: "Your keys are safe, I put them in the bowl by the door where they always go.", hasRecording: true },
-        redirect: { text: "Let's check the kitchen counter together - that's where we usually keep them.", hasRecording: true },
-        acknowledge: { text: "You're looking for your keys. That must feel frustrating.", hasRecording: false }
+        comfort: { text: "Your keys are safe, I put them in the bowl by the door where they always go.", hasRecording: true, transcribed: false },
+        redirect: { text: "Let's check the kitchen counter together - that's where we usually keep them.", hasRecording: true, transcribed: false },
+        acknowledge: { text: "", hasRecording: false, transcribed: false }
       },
       triggerCount: 12,
       lastTriggered: new Date(Date.now() - 2 * 60 * 60 * 1000),
@@ -40,9 +40,9 @@ function App() {
       id: 2, 
       question: "When is dinner?", 
       responses: {
-        comfort: { text: "Dinner will be ready at 6 PM, just like always. You don't need to worry.", hasRecording: true },
-        redirect: { text: "Let's go check what we're making for dinner tonight.", hasRecording: false },
-        acknowledge: { text: "You're thinking about dinner. That sounds important to you.", hasRecording: false }
+        comfort: { text: "Dinner will be ready at 6 PM, just like always. You don't need to worry.", hasRecording: true, transcribed: false },
+        redirect: { text: "", hasRecording: false, transcribed: false },
+        acknowledge: { text: "", hasRecording: false, transcribed: false }
       },
       triggerCount: 8,
       lastTriggered: new Date(Date.now() - 30 * 60 * 1000),
@@ -51,9 +51,9 @@ function App() {
       id: 3, 
       question: "I need to get home", 
       responses: {
-        comfort: { text: "You are home, sweetheart. This is your safe place with me.", hasRecording: false },
-        redirect: { text: "Let's look at some photos of our home together.", hasRecording: false },
-        acknowledge: { text: "You're feeling like you want to be somewhere familiar. That makes sense.", hasRecording: false }
+        comfort: { text: "", hasRecording: false, transcribed: false },
+        redirect: { text: "", hasRecording: false, transcribed: false },
+        acknowledge: { text: "", hasRecording: false, transcribed: false }
       },
       triggerCount: 15,
       mentionedEntities: ["home"]
@@ -62,9 +62,9 @@ function App() {
       id: 4, 
       question: "Where is Sarah?", 
       responses: {
-        comfort: { text: "Sarah is doing well. She sends her love and thinks about you often.", hasRecording: false },
-        redirect: { text: "Would you like to look at some pictures of Sarah together?", hasRecording: false },
-        acknowledge: { text: "You're missing Sarah. She's very special to you.", hasRecording: false }
+        comfort: { text: "Sarah is doing well. She sends her love and thinks about you often.", hasRecording: false, transcribed: false },
+        redirect: { text: "Would you like to look at some pictures of Sarah together?", hasRecording: false, transcribed: false },
+        acknowledge: { text: "You're missing Sarah. She's very special to you.", hasRecording: false, transcribed: false }
       },
       triggerCount: 18,
       mentionedEntities: ["Sarah"]
@@ -73,6 +73,17 @@ function App() {
 
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
+
+  // Simple speech-to-text using Web Speech API
+  const transcribeAudio = async (audioBlob: Blob): Promise<string> => {
+    return new Promise((resolve) => {
+      // In a real implementation, you'd use a speech-to-text service
+      // For demo purposes, we'll simulate transcription
+      setTimeout(() => {
+        resolve("[Transcribed from your recording]");
+      }, 1000);
+    });
+  };
 
   const startRecording = async (category: ResponseCategory) => {
     if (!selectedQuestion) return;
@@ -87,8 +98,12 @@ function App() {
         audioChunksRef.current.push(event.data);
       };
 
-      mediaRecorder.onstop = () => {
+      mediaRecorder.onstop = async () => {
         const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/wav' });
+        
+        // Transcribe the audio
+        const transcribedText = await transcribeAudio(audioBlob);
+        
         setRecordings(prev => prev.map(r => 
           r.id === selectedQuestion.id 
             ? { 
@@ -96,9 +111,10 @@ function App() {
                 responses: {
                   ...r.responses,
                   [category]: {
-                    ...r.responses[category],
+                    text: transcribedText,
                     audioBlob,
-                    hasRecording: true
+                    hasRecording: true,
+                    transcribed: true
                   }
                 }
               }
@@ -110,9 +126,10 @@ function App() {
           responses: {
             ...prev.responses,
             [category]: {
-              ...prev.responses[category],
+              text: transcribedText,
               audioBlob,
-              hasRecording: true
+              hasRecording: true,
+              transcribed: true
             }
           }
         } : null);
@@ -146,15 +163,36 @@ function App() {
     }
   };
 
+  const deleteRecording = (category: ResponseCategory) => {
+    if (!selectedQuestion) return;
+    
+    const updatedQuestion = {
+      ...selectedQuestion,
+      responses: {
+        ...selectedQuestion.responses,
+        [category]: {
+          text: "",
+          hasRecording: false,
+          transcribed: false
+        }
+      }
+    };
+    
+    setSelectedQuestion(updatedQuestion);
+    setRecordings(prev => prev.map(r => 
+      r.id === selectedQuestion.id ? updatedQuestion : r
+    ));
+  };
+
   const addNewQuestion = () => {
     if (newQuestion.trim()) {
       const newRecording: Recording = {
         id: Date.now(),
         question: newQuestion.trim(),
         responses: {
-          comfort: { text: "", hasRecording: false },
-          redirect: { text: "", hasRecording: false },
-          acknowledge: { text: "", hasRecording: false }
+          comfort: { text: "", hasRecording: false, transcribed: false },
+          redirect: { text: "", hasRecording: false, transcribed: false },
+          acknowledge: { text: "", hasRecording: false, transcribed: false }
         },
         triggerCount: 0
       };
@@ -179,17 +217,12 @@ function App() {
     }
   };
 
-  const getComfortSuggestion = (question: Recording) => {
-    if (!question.mentionedEntities) return null;
-    
-    const entity = question.mentionedEntities[0];
-    if (question.triggerCount >= 10) {
-      return {
-        entity,
-        suggestion: `${entity} has been mentioned ${question.triggerCount} times. Would you like to create a comfort story about ${entity}?`
-      };
+  const getSuggestionText = (category: ResponseCategory) => {
+    switch (category) {
+      case 'comfort': return 'Your keys are safe, I put them in the bowl by the door...';
+      case 'redirect': return 'Let\'s check the kitchen counter together...';
+      case 'acknowledge': return 'You\'re looking for your keys. That must feel frustrating...';
     }
-    return null;
   };
 
   const totalRecorded = recordings.reduce((total, r) => {
@@ -315,16 +348,28 @@ function App() {
                             <div className="flex items-center space-x-2 mb-1">
                               <span className="text-sm font-medium text-gray-700">{getCategoryName(category)}</span>
                               <span className="text-xs text-gray-500">•</span>
-                              <span className="text-xs text-gray-500">Recorded</span>
+                              <span className="text-xs text-gray-500">
+                                {response.transcribed ? 'Audio transcribed' : 'Recorded'}
+                              </span>
                             </div>
-                            <p className="text-sm text-gray-600">{response.text}</p>
+                            <p className="text-sm text-gray-900 font-medium">{response.text}</p>
                           </div>
-                          <button
-                            onClick={() => playRecording(selectedQuestion, category)}
-                            className="ml-4 px-3 py-1 text-sm border border-gray-300 rounded hover:bg-white"
-                          >
-                            ▶ Play
-                          </button>
+                          <div className="flex items-center space-x-2 ml-4">
+                            <button
+                              onClick={() => playRecording(selectedQuestion, category)}
+                              className="p-1 text-gray-500 hover:text-gray-700"
+                              title="Play recording"
+                            >
+                              ▶
+                            </button>
+                            <button
+                              onClick={() => deleteRecording(category)}
+                              className="p-1 text-gray-400 hover:text-red-500"
+                              title="Delete recording"
+                            >
+                              🗑
+                            </button>
+                          </div>
                         </div>
                       );
                     })}
@@ -341,80 +386,42 @@ function App() {
                   
                   {(['comfort', 'redirect', 'acknowledge'] as ResponseCategory[]).map((category) => {
                     const response = selectedQuestion.responses[category];
+                    const isCurrentlyRecording = isRecording && currentRecordingCategory === category;
+                    
                     return (
                       <div key={category} className="border border-gray-200 rounded p-4">
                         <div className="flex items-center justify-between mb-3">
                           <h4 className="font-medium text-gray-900">{getCategoryName(category)}</h4>
-                          {response?.hasRecording && (
-                            <span className="text-sm text-gray-500">Already recorded</span>
-                          )}
+                          <div className="flex items-center space-x-2">
+                            {isCurrentlyRecording && (
+                              <span className="text-sm text-red-600 flex items-center">
+                                <span className="w-2 h-2 bg-red-600 rounded-full animate-pulse mr-2"></span>
+                                Recording...
+                              </span>
+                            )}
+                            <button
+                              onClick={() => isCurrentlyRecording ? stopRecording() : startRecording(category)}
+                              className={`px-3 py-1 text-sm rounded font-medium ${
+                                isCurrentlyRecording
+                                  ? 'bg-red-600 text-white hover:bg-red-700'
+                                  : 'text-white hover:opacity-90'
+                              }`}
+                              style={{ 
+                                backgroundColor: isCurrentlyRecording ? undefined : '#678A97'
+                              }}
+                            >
+                              {isCurrentlyRecording ? 'Stop & Save' : 'Record'}
+                            </button>
+                          </div>
                         </div>
 
-                        <textarea
-                          value={response?.text || ''}
-                          onChange={(e) => {
-                            const updatedQuestion = {
-                              ...selectedQuestion,
-                              responses: {
-                                ...selectedQuestion.responses,
-                                [category]: {
-                                  ...selectedQuestion.responses[category],
-                                  text: e.target.value
-                                }
-                              }
-                            };
-                            setSelectedQuestion(updatedQuestion);
-                            setRecordings(prev => prev.map(r => 
-                              r.id === selectedQuestion.id ? updatedQuestion : r
-                            ));
-                          }}
-                          rows={2}
-                          className="w-full px-3 py-2 border border-gray-300 rounded text-sm focus:outline-none focus:border-gray-400 mb-3"
-                          placeholder={`Enter ${category} response...`}
-                        />
-
-                        <button
-                          onClick={() => startRecording(category)}
-                          disabled={isRecording || !response?.text?.trim()}
-                          className={`px-4 py-2 text-sm rounded font-medium disabled:opacity-50 ${
-                            isRecording && currentRecordingCategory === category
-                              ? 'bg-gray-600 text-white'
-                              : response?.hasRecording
-                              ? 'border border-gray-300 hover:bg-gray-50'
-                              : 'text-white'
-                          }`}
-                          style={{ 
-                            backgroundColor: isRecording && currentRecordingCategory === category 
-                              ? undefined 
-                              : response?.hasRecording 
-                              ? undefined 
-                              : '#678A97' 
-                          }}
-                        >
-                          {isRecording && currentRecordingCategory === category 
-                            ? 'Recording...' 
-                            : response?.hasRecording
-                            ? 'Re-record'
-                            : 'Record'
-                          }
-                        </button>
+                        <div className="text-sm">
+                          <p className="text-gray-600 italic">Suggestion: {getSuggestionText(category)}</p>
+                        </div>
                       </div>
                     );
                   })}
                 </div>
-
-                {/* Recording Indicator */}
-                {isRecording && (
-                  <div className="mt-6 p-4 bg-gray-100 rounded text-center">
-                    <p className="text-gray-700 mb-2">Recording {getCategoryName(currentRecordingCategory!)} response...</p>
-                    <button
-                      onClick={stopRecording}
-                      className="px-4 py-2 bg-gray-600 text-white rounded hover:bg-gray-700"
-                    >
-                      Stop & Save
-                    </button>
-                  </div>
-                )}
               </div>
             </div>
           ) : (
