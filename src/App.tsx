@@ -28,54 +28,25 @@ function App() {
       id: 1, 
       question: "Where are my keys?", 
       responses: {
-        comfort: { text: "Your keys are safe, I put them in the bowl by the door where they always go.", hasRecording: true, transcribed: false },
-        redirect: { text: "Let's check the kitchen counter together - that's where we usually keep them.", hasRecording: true, transcribed: false },
-        acknowledge: { text: "", hasRecording: false, transcribed: false }
-      },
-      triggerCount: 12,
-      lastTriggered: new Date(Date.now() - 2 * 60 * 60 * 1000),
-      mentionedEntities: ["keys"]
-    },
-    { 
-      id: 2, 
-      question: "When is dinner?", 
-      responses: {
-        comfort: { text: "Dinner will be ready at 6 PM, just like always. You don't need to worry.", hasRecording: true, transcribed: false },
-        redirect: { text: "", hasRecording: false, transcribed: false },
-        acknowledge: { text: "", hasRecording: false, transcribed: false }
-      },
-      triggerCount: 8,
-      lastTriggered: new Date(Date.now() - 30 * 60 * 1000),
-    },
-    { 
-      id: 3, 
-      question: "I need to get home", 
-      responses: {
         comfort: { text: "", hasRecording: false, transcribed: false },
         redirect: { text: "", hasRecording: false, transcribed: false },
         acknowledge: { text: "", hasRecording: false, transcribed: false }
       },
-      triggerCount: 15,
-      mentionedEntities: ["home"]
-    },
-    { 
-      id: 4, 
-      question: "Where is Sarah?", 
-      responses: {
-        comfort: { text: "Sarah is doing well. She sends her love and thinks about you often.", hasRecording: false, transcribed: false },
-        redirect: { text: "Would you like to look at some pictures of Sarah together?", hasRecording: false, transcribed: false },
-        acknowledge: { text: "You're missing Sarah. She's very special to you.", hasRecording: false, transcribed: false }
-      },
-      triggerCount: 18,
-      mentionedEntities: ["Sarah"]
+      triggerCount: 0,
+      mentionedEntities: ["keys"]
     }
   ]);
 
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
   const recognitionRef = useRef<any>(null);
+  const listeningRecognitionRef = useRef<any>(null);
   const transcriptRef = useRef<string>('');
   const [speechTranscript, setSpeechTranscript] = useState<string>('');
+  const [listeningTranscript, setListeningTranscript] = useState<string>('');
+  const [audioEnabled, setAudioEnabled] = useState<boolean>(false);
+  const [currentlyPlaying, setCurrentlyPlaying] = useState<string>('');
+  const [showAudioPrompt, setShowAudioPrompt] = useState<{question: string, response: string, audioBlob: Blob} | null>(null);
 
   // Start speech recognition during recording
   const startSpeechRecognition = () => {
@@ -130,6 +101,203 @@ function App() {
       recognitionRef.current.stop();
       recognitionRef.current = null;
     }
+  };
+
+  // Continuous listening for question detection
+  const startContinuousListening = () => {
+    const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    
+    if (!SpeechRecognition) {
+      console.log('Speech Recognition not supported for continuous listening');
+      alert('Speech recognition is not supported in this browser. Please use Chrome or Edge.');
+      return;
+    }
+
+    const recognition = new SpeechRecognition();
+    listeningRecognitionRef.current = recognition;
+    
+    recognition.continuous = true;
+    recognition.interimResults = true;
+    recognition.lang = 'en-US';
+    
+    recognition.onresult = (event: any) => {
+      let finalTranscript = '';
+      let interimTranscript = '';
+      
+      for (let i = 0; i < event.results.length; i++) {
+        const transcript = event.results[i][0].transcript;
+        if (event.results[i].isFinal) {
+          finalTranscript += transcript;
+        } else {
+          interimTranscript += transcript;
+        }
+      }
+      
+      const fullTranscript = finalTranscript + interimTranscript;
+      setListeningTranscript(fullTranscript);
+      
+      // Check for question matches when we have a final result
+      if (finalTranscript.trim()) {
+        checkForQuestionMatch(finalTranscript.trim());
+        // Clear the transcript after checking
+        setTimeout(() => setListeningTranscript(''), 3000);
+      }
+    };
+    
+    recognition.onerror = (event: any) => {
+      console.error('Continuous listening error:', event.error);
+      if (event.error === 'not-allowed') {
+        alert('Microphone access denied. Please allow microphone access and try again.');
+        setIsListening(false);
+      }
+    };
+    
+    recognition.onend = () => {
+      // Restart recognition if we're still supposed to be listening
+      if (isListening) {
+        console.log('Restarting continuous listening...');
+        setTimeout(() => {
+          if (isListening) {
+            startContinuousListening();
+          }
+        }, 1000);
+      }
+    };
+    
+    recognition.start();
+    console.log('Continuous listening started');
+  };
+
+  const stopContinuousListening = () => {
+    if (listeningRecognitionRef.current) {
+      listeningRecognitionRef.current.stop();
+      listeningRecognitionRef.current = null;
+      setListeningTranscript('');
+      console.log('Continuous listening stopped');
+    }
+  };
+
+  // Check if spoken text matches any recorded questions
+  const checkForQuestionMatch = (spokenText: string) => {
+    console.log('Checking for match:', spokenText);
+    
+    const lowerSpoken = spokenText.toLowerCase();
+    
+    // Find matching questions using simple keyword matching
+    const matchedQuestions = recordings.filter(recording => {
+      const lowerQuestion = recording.question.toLowerCase();
+      
+      // Simple keyword matching - check if key words appear in both
+      const spokenWords = lowerSpoken.split(' ').filter(word => word.length > 2);
+      const questionWords = lowerQuestion.split(' ').filter(word => word.length > 2);
+      
+      // Count matching words
+      const matchingWords = spokenWords.filter(word => 
+        questionWords.some(qWord => qWord.includes(word) || word.includes(qWord))
+      );
+      
+      // Consider it a match if at least 50% of words match
+      const matchPercentage = matchingWords.length / Math.min(spokenWords.length, questionWords.length);
+      return matchPercentage >= 0.5;
+    });
+    
+    if (matchedQuestions.length > 0) {
+      const question = matchedQuestions[0]; // Use first match
+      console.log('Question matched:', question.question);
+      
+      // Increment trigger count
+      setRecordings(prev => prev.map(r => 
+        r.id === question.id 
+          ? { ...r, triggerCount: r.triggerCount + 1, lastTriggered: new Date() }
+          : r
+      ));
+      
+      // Find a response to play
+      const availableResponses = (['comfort', 'redirect', 'acknowledge'] as ResponseCategory[])
+        .map(category => ({ category, response: question.responses[category] }))
+        .filter(({ response }) => response?.hasRecording);
+      
+      if (availableResponses.length > 0) {
+        // For now, just play the first available response
+        const { category, response } = availableResponses[0];
+        console.log('Playing response:', category, response?.text);
+        
+                 // Play the audio - simplified approach
+         if (response?.audioBlob) {
+           console.log('🔊 Attempting to play audio response...');
+           
+           const audioUrl = URL.createObjectURL(response.audioBlob);
+           const audio = new Audio(audioUrl);
+           
+           audio.volume = 1.0;
+           setCurrentlyPlaying(response.text);
+           
+           audio.onended = () => {
+             setCurrentlyPlaying('');
+             URL.revokeObjectURL(audioUrl);
+             console.log('✅ Audio playback completed');
+           };
+           
+           audio.onerror = () => {
+             console.error('❌ Audio playback error');
+             setCurrentlyPlaying('');
+             URL.revokeObjectURL(audioUrl);
+           };
+           
+           // Try to play - if it fails, show the manual prompt
+           const playPromise = audio.play();
+           
+           if (playPromise !== undefined) {
+             playPromise.then(() => {
+               console.log('✅ Audio auto-play successful');
+               setAudioEnabled(true);
+             }).catch(error => {
+               console.log('⚠️ Auto-play blocked, showing manual prompt');
+               setCurrentlyPlaying('');
+               
+               if (response.audioBlob) {
+                 setShowAudioPrompt({
+                   question: question.question,
+                   response: response.text,
+                   audioBlob: response.audioBlob
+                 });
+               }
+             });
+           }
+         }
+         
+         // Show visual feedback (but make it less intrusive)
+         console.log(`✅ MATCH DETECTED: "${question.question}" → Playing: "${response?.text}"`);
+      } else {
+        console.log('No recorded responses available for this question');
+      }
+    }
+  };
+
+  // Handle manual audio playback when autoplay fails
+  const handleManualPlayback = () => {
+    if (!showAudioPrompt) return;
+    
+    const audioUrl = URL.createObjectURL(showAudioPrompt.audioBlob);
+    const audio = new Audio(audioUrl);
+    
+    audio.volume = 1.0;
+    setCurrentlyPlaying(showAudioPrompt.response);
+    
+    audio.onended = () => {
+      setCurrentlyPlaying('');
+      URL.revokeObjectURL(audioUrl);
+    };
+    
+    audio.play().then(() => {
+      console.log('Manual playback successful');
+      setAudioEnabled(true);
+      setShowAudioPrompt(null);
+    }).catch(error => {
+      console.error('Manual playback failed:', error);
+      setCurrentlyPlaying('');
+      setShowAudioPrompt(null);
+    });
   };
 
   const startRecording = async (category: ResponseCategory) => {
@@ -325,7 +493,15 @@ function App() {
             </div>
             
             <button
-              onClick={() => setIsListening(!isListening)}
+              onClick={() => {
+                if (isListening) {
+                  stopContinuousListening();
+                  setIsListening(false);
+                } else {
+                  setIsListening(true);
+                  startContinuousListening();
+                }
+              }}
               className={`px-4 py-2 rounded font-medium ${
                 isListening 
                   ? "bg-gray-100 text-gray-700" 
@@ -343,7 +519,7 @@ function App() {
         {/* Left Panel - Questions */}
         <div className="w-1/3 bg-white border-r border-gray-200">
           <div className="p-6 border-b border-gray-200">
-            <h2 className="text-lg font-medium text-gray-900 mb-4">Questions</h2>
+            <h2 className="text-lg font-medium text-gray-900 mb-4">Dad's Questions/Concerns</h2>
             
             <div className="flex">
               <input
@@ -410,12 +586,72 @@ function App() {
               <div className="p-6 border-b border-gray-200">
                 <h1 className="text-xl font-medium text-gray-900 mb-2">{selectedQuestion.question}</h1>
                 <p className="text-gray-600">Record different response types. The app will rotate them automatically.</p>
-              </div>
+                
+                {/* Listening Status */}
+                {isListening && (
+                  <div className="mt-4 p-3 bg-blue-50 border border-blue-200 rounded">
+                    <div className="flex items-center">
+                      <span className="w-2 h-2 bg-blue-600 rounded-full animate-pulse mr-2"></span>
+                      <span className="text-sm text-blue-800 font-medium">Listening for questions...</span>
+                    </div>
+                    {listeningTranscript && (
+                      <p className="text-xs text-blue-600 mt-1">Heard: "{listeningTranscript}"</p>
+                    )}
+                  </div>
+                )}
+                
+                {/* Audio Playing Status */}
+                {currentlyPlaying && (
+                  <div className="mt-4 p-3 bg-green-50 border border-green-200 rounded">
+                    <div className="flex items-center">
+                      <span className="w-2 h-2 bg-green-600 rounded-full animate-pulse mr-2"></span>
+                      <span className="text-sm text-green-800 font-medium">Playing response...</span>
+                    </div>
+                    <p className="text-xs text-green-600 mt-1">"{currentlyPlaying}"</p>
+                  </div>
+                                 )}
+                </div>
 
               <div className="flex-1 p-6">
+                {/* Audio Permission Prompt */}
+                {showAudioPrompt && (
+                  <div className="mb-6 p-4 bg-yellow-50 border border-yellow-200 rounded-lg">
+                    <div className="flex items-start">
+                      <div className="flex-shrink-0">
+                        <span className="text-2xl">🎯</span>
+                      </div>
+                      <div className="ml-3 flex-1">
+                        <h3 className="text-sm font-medium text-yellow-800">Question Detected!</h3>
+                        <p className="mt-1 text-sm text-yellow-700">
+                          <strong>"{showAudioPrompt.question}"</strong>
+                        </p>
+                        <p className="mt-2 text-sm text-yellow-700">
+                          Response ready: "{showAudioPrompt.response}"
+                        </p>
+                        <div className="mt-3 flex space-x-3">
+                          <button
+                            onClick={handleManualPlayback}
+                            className="bg-yellow-600 text-white px-4 py-2 rounded text-sm font-medium hover:bg-yellow-700"
+                          >
+                            ▶ Play Response
+                          </button>
+                          <button
+                            onClick={() => setShowAudioPrompt(null)}
+                            className="bg-gray-300 text-gray-700 px-4 py-2 rounded text-sm font-medium hover:bg-gray-400"
+                          >
+                            Dismiss
+                          </button>
+                        </div>
+                        <p className="mt-2 text-xs text-yellow-600">
+                          Click "Play Response" to enable automatic audio playback for future detections.
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+                )}
                 {/* Recorded Responses List */}
                 <div className="mb-8">
-                  <h3 className="font-medium text-gray-900 mb-4">Recorded Responses</h3>
+                  <h3 className="font-medium text-gray-900 mb-4">My Recorded Responses</h3>
                   <div className="space-y-3">
                     {(['comfort', 'redirect', 'acknowledge'] as ResponseCategory[]).map((category) => {
                       const response = selectedQuestion.responses[category];
