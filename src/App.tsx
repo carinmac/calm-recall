@@ -23,19 +23,108 @@ function App() {
   const [currentRecordingCategory, setCurrentRecordingCategory] = useState<ResponseCategory | null>(null);
   const [newQuestion, setNewQuestion] = useState('');
   
-  const [recordings, setRecordings] = useState<Recording[]>([
-    { 
-      id: 1, 
-      question: "Where are my keys?", 
-      responses: {
-        comfort: { text: "", hasRecording: false, transcribed: false },
-        redirect: { text: "", hasRecording: false, transcribed: false },
-        acknowledge: { text: "", hasRecording: false, transcribed: false }
-      },
-      triggerCount: 0,
-      mentionedEntities: ["keys"]
+  // Load recordings from localStorage or use default
+  const loadRecordings = (): Recording[] => {
+    try {
+      const saved = localStorage.getItem('calm-recall-recordings');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        // Convert base64 back to Blobs if they exist
+        return parsed.map((recording: any) => ({
+          ...recording,
+          responses: Object.fromEntries(
+            Object.entries(recording.responses).map(([key, response]: [string, any]) => [
+              key,
+              response?.audioBase64 ? {
+                ...response,
+                audioBlob: (() => {
+                  try {
+                    // Convert base64 back to blob
+                    const binaryString = atob(response.audioBase64);
+                    const bytes = new Uint8Array(binaryString.length);
+                    for (let i = 0; i < binaryString.length; i++) {
+                      bytes[i] = binaryString.charCodeAt(i);
+                    }
+                    return new Blob([bytes], { type: response.audioType || 'audio/wav' });
+                  } catch (error) {
+                    console.error('Error converting base64 to blob:', error);
+                    return null;
+                  }
+                })(),
+                audioBase64: undefined, // Remove base64 data after converting
+                audioType: undefined
+              } : response
+            ])
+          )
+        }));
+      }
+    } catch (error) {
+      console.error('Error loading recordings from localStorage:', error);
     }
-  ]);
+    
+    // Default data if nothing saved
+    return [
+      { 
+        id: 1, 
+        question: "Where are my keys?", 
+        responses: {
+          comfort: { text: "", hasRecording: false, transcribed: false },
+          redirect: { text: "", hasRecording: false, transcribed: false },
+          acknowledge: { text: "", hasRecording: false, transcribed: false }
+        },
+        triggerCount: 0,
+        mentionedEntities: ["keys"]
+      }
+    ];
+  };
+
+  const [recordings, setRecordings] = useState<Recording[]>(loadRecordings());
+
+  // Debug function to check localStorage
+  const debugLocalStorage = () => {
+    const saved = localStorage.getItem('calm-recall-recordings');
+    console.log('🔍 localStorage data:', saved ? JSON.parse(saved) : 'No data');
+  };
+
+  // Save recordings to localStorage whenever they change
+  const saveRecordings = async (newRecordings: Recording[]) => {
+    try {
+      // Convert Blobs to base64 for storage
+      const recordingsToSave = await Promise.all(
+        newRecordings.map(async recording => ({
+          ...recording,
+          responses: await Promise.all(
+            Object.entries(recording.responses).map(async ([key, response]) => {
+              if (response?.audioBlob) {
+                try {
+                  // Convert blob to base64
+                  const arrayBuffer = await response.audioBlob.arrayBuffer();
+                  const base64 = btoa(String.fromCharCode(...new Uint8Array(arrayBuffer)));
+                  return [key, {
+                    ...response,
+                    audioBase64: base64,
+                    audioType: response.audioBlob.type || 'audio/wav',
+                    audioBlob: undefined // Remove blob for storage
+                  }];
+                } catch (error) {
+                  console.error('Error converting audio blob:', error);
+                  return [key, response];
+                }
+              }
+              return [key, response];
+            })
+          ).then(entries => Object.fromEntries(entries))
+        }))
+      );
+      
+      localStorage.setItem('calm-recall-recordings', JSON.stringify(recordingsToSave));
+      console.log('💾 Recordings saved to localStorage');
+    } catch (error) {
+      console.error('Error saving recordings to localStorage:', error);
+    }
+    
+    setRecordings(newRecordings);
+  };
 
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
@@ -47,6 +136,18 @@ function App() {
   const [audioEnabled, setAudioEnabled] = useState<boolean>(false);
   const [currentlyPlaying, setCurrentlyPlaying] = useState<string>('');
   const [showAudioPrompt, setShowAudioPrompt] = useState<{question: string, response: string, audioBlob: Blob} | null>(null);
+  const currentAudioRef = useRef<HTMLAudioElement | null>(null);
+
+  // Stop any currently playing audio
+  const stopCurrentAudio = () => {
+    if (currentAudioRef.current) {
+      currentAudioRef.current.pause();
+      currentAudioRef.current.currentTime = 0;
+      currentAudioRef.current = null;
+      setCurrentlyPlaying('');
+      console.log('🛑 Stopped previous audio');
+    }
+  };
 
   // Start speech recognition during recording
   const startSpeechRecognition = () => {
@@ -205,12 +306,13 @@ function App() {
       const question = matchedQuestions[0]; // Use first match
       console.log('Question matched:', question.question);
       
-      // Increment trigger count
-      setRecordings(prev => prev.map(r => 
-        r.id === question.id 
-          ? { ...r, triggerCount: r.triggerCount + 1, lastTriggered: new Date() }
-          : r
-      ));
+             // Increment trigger count
+       const updatedRecordings = recordings.map(r => 
+         r.id === question.id 
+           ? { ...r, triggerCount: r.triggerCount + 1, lastTriggered: new Date() }
+           : r
+       );
+       saveRecordings(updatedRecordings); // Note: not awaiting to avoid blocking
       
       // Find a response to play
       const availableResponses = (['comfort', 'redirect', 'acknowledge'] as ResponseCategory[])
@@ -222,12 +324,18 @@ function App() {
         const { category, response } = availableResponses[0];
         console.log('Playing response:', category, response?.text);
         
-                 // Play the audio - simplified approach
+                 // Play the audio - with overlap prevention
          if (response?.audioBlob) {
            console.log('🔊 Attempting to play audio response...');
            
+           // Stop any currently playing audio first
+           stopCurrentAudio();
+           
            const audioUrl = URL.createObjectURL(response.audioBlob);
            const audio = new Audio(audioUrl);
+           
+           // Store reference to current audio
+           currentAudioRef.current = audio;
            
            audio.volume = 1.0;
            setCurrentlyPlaying(response.text);
@@ -235,6 +343,7 @@ function App() {
            audio.onended = () => {
              setCurrentlyPlaying('');
              URL.revokeObjectURL(audioUrl);
+             currentAudioRef.current = null;
              console.log('✅ Audio playback completed');
            };
            
@@ -242,6 +351,7 @@ function App() {
              console.error('❌ Audio playback error');
              setCurrentlyPlaying('');
              URL.revokeObjectURL(audioUrl);
+             currentAudioRef.current = null;
            };
            
            // Try to play - if it fails, show the manual prompt
@@ -254,6 +364,7 @@ function App() {
              }).catch(error => {
                console.log('⚠️ Auto-play blocked, showing manual prompt');
                setCurrentlyPlaying('');
+               currentAudioRef.current = null;
                
                if (response.audioBlob) {
                  setShowAudioPrompt({
@@ -278,8 +389,14 @@ function App() {
   const handleManualPlayback = () => {
     if (!showAudioPrompt) return;
     
+    // Stop any currently playing audio first
+    stopCurrentAudio();
+    
     const audioUrl = URL.createObjectURL(showAudioPrompt.audioBlob);
     const audio = new Audio(audioUrl);
+    
+    // Store reference to current audio
+    currentAudioRef.current = audio;
     
     audio.volume = 1.0;
     setCurrentlyPlaying(showAudioPrompt.response);
@@ -287,6 +404,7 @@ function App() {
     audio.onended = () => {
       setCurrentlyPlaying('');
       URL.revokeObjectURL(audioUrl);
+      currentAudioRef.current = null;
     };
     
     audio.play().then(() => {
@@ -296,6 +414,7 @@ function App() {
     }).catch(error => {
       console.error('Manual playback failed:', error);
       setCurrentlyPlaying('');
+      currentAudioRef.current = null;
       setShowAudioPrompt(null);
     });
   };
@@ -343,7 +462,7 @@ function App() {
           console.log('Using actual transcript:', transcribedText);
         }
         
-        setRecordings(prev => prev.map(r => 
+        const updatedRecordings = recordings.map(r => 
           r.id === selectedQuestion.id 
             ? { 
                 ...r, 
@@ -358,7 +477,8 @@ function App() {
                 }
               }
             : r
-        ));
+        );
+        saveRecordings(updatedRecordings);
         
         setSelectedQuestion(prev => prev ? {
           ...prev,
@@ -403,10 +523,28 @@ function App() {
 
   const playRecording = (recording: Recording, category: ResponseCategory) => {
     const response = recording.responses[category];
+    console.log('🎵 playRecording called:', { category, response, hasAudioBlob: !!response?.audioBlob });
+    
     if (response?.audioBlob) {
-      const audioUrl = URL.createObjectURL(response.audioBlob);
-      const audio = new Audio(audioUrl);
-      audio.play();
+      try {
+        const audioUrl = URL.createObjectURL(response.audioBlob);
+        const audio = new Audio(audioUrl);
+        console.log('🎵 Created audio URL:', audioUrl);
+        
+        audio.onloadeddata = () => console.log('🎵 Audio loaded successfully');
+        audio.onerror = (e) => console.error('🎵 Audio error:', e);
+        
+        audio.play().then(() => {
+          console.log('🎵 Audio playback started');
+        }).catch(error => {
+          console.error('🎵 Audio playback failed:', error);
+        });
+      } catch (error) {
+        console.error('🎵 Error creating audio:', error);
+      }
+    } else {
+      console.log('🎵 No audio blob found for playback');
+      debugLocalStorage(); // Show what's in storage
     }
   };
 
@@ -426,9 +564,10 @@ function App() {
     };
     
     setSelectedQuestion(updatedQuestion);
-    setRecordings(prev => prev.map(r => 
+    const updatedRecordings = recordings.map(r => 
       r.id === selectedQuestion.id ? updatedQuestion : r
-    ));
+    );
+    saveRecordings(updatedRecordings);
   };
 
   const addNewQuestion = () => {
@@ -443,14 +582,14 @@ function App() {
         },
         triggerCount: 0
       };
-      setRecordings([...recordings, newRecording]);
+      saveRecordings([...recordings, newRecording]);
       setNewQuestion('');
       setSelectedQuestion(newRecording);
     }
   };
 
   const deleteQuestion = (id: number) => {
-    setRecordings(recordings.filter(r => r.id !== id));
+    saveRecordings(recordings.filter(r => r.id !== id));
     if (selectedQuestion?.id === id) {
       setSelectedQuestion(null);
     }
