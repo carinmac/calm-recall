@@ -836,7 +836,7 @@ function App() {
 
                 {/* Record New Responses */}
                 <div className="space-y-6">
-                  <h3 className="font-medium text-gray-900">Record New Responses</h3>
+                  <h3 className="font-medium" style={{ color: '#678A97' }}>Record New Responses</h3>
                   
                   {(['comfort', 'redirect', 'acknowledge'] as ResponseCategory[]).map((category) => {
                     const response = selectedQuestion.responses[category];
@@ -845,7 +845,7 @@ function App() {
                     return (
                       <div key={category} className="border border-gray-200 rounded p-4">
                         <div className="flex items-center justify-between mb-3">
-                          <h4 className="font-medium text-gray-900">{getCategoryName(category)}</h4>
+                          <h4 className="font-medium" style={{ color: '#678A97' }}>{getCategoryName(category)}</h4>
                           <div className="flex items-center space-x-2">
                             {isCurrentlyRecording && (
                               <span className="text-sm text-red-600 flex items-center">
