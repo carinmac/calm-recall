@@ -145,7 +145,9 @@ function App() {
       currentAudioRef.current.currentTime = 0;
       currentAudioRef.current = null;
       setCurrentlyPlaying('');
-      console.log('🛑 Stopped previous audio');
+      setIsAudioPlaying(false); // 🔓 Release audio lock
+      setIsProcessingMatch(false); // 🔓 Release processing lock
+      console.log('🛑 Stopped previous audio - all locks released');
     }
   };
 
@@ -254,14 +256,29 @@ function App() {
     };
     
     recognition.onend = () => {
-      // Restart recognition if we're still supposed to be listening
+      console.log('🔄 Speech recognition ended');
+      // Always restart recognition if we're still supposed to be listening
       if (isListening) {
-        console.log('Restarting continuous listening...');
+        console.log('🔄 Restarting continuous listening in 1 second...');
         setTimeout(() => {
-          if (isListening) {
+          if (isListening && listeningRecognitionRef.current === null) {
+            console.log('🚀 Attempting recognition restart...');
             startContinuousListening();
           }
         }, 1000);
+      }
+    };
+    
+    // Add additional error recovery
+    recognition.onstop = () => {
+      console.log('🛑 Speech recognition stopped');
+      if (isListening) {
+        console.log('🔄 Recognition stopped unexpectedly - restarting...');
+        setTimeout(() => {
+          if (isListening && listeningRecognitionRef.current === null) {
+            startContinuousListening();
+          }
+        }, 2000);
       }
     };
     
@@ -274,45 +291,276 @@ function App() {
       listeningRecognitionRef.current.stop();
       listeningRecognitionRef.current = null;
       setListeningTranscript('');
-      console.log('Continuous listening stopped');
+      console.log('🛑 Continuous listening stopped');
     }
   };
 
-  // Check if spoken text matches any recorded questions
-  const checkForQuestionMatch = (spokenText: string) => {
-    console.log('Checking for match:', spokenText);
+  // Add debouncing state
+  const [lastProcessedPhrase, setLastProcessedPhrase] = useState<string>('');
+  const [lastProcessedTime, setLastProcessedTime] = useState<number>(0);
+  const [isAudioPlaying, setIsAudioPlaying] = useState<boolean>(false);
+  const [isProcessingMatch, setIsProcessingMatch] = useState<boolean>(false);
+  const processingTimeoutRef = useRef<number | null>(null);
+
+  // Master reset function to clear all locks and restart
+  const resetAllSystems = () => {
+    console.log('🔧 MASTER RESET: Clearing all locks and restarting...');
     
-    const lowerSpoken = spokenText.toLowerCase();
+    // Clear all locks and timers
+    setIsProcessingMatch(false);
+    setIsAudioPlaying(false);
+    if (processingTimeoutRef.current) {
+      clearTimeout(processingTimeoutRef.current);
+      processingTimeoutRef.current = null;
+    }
+    
+    // Stop any current audio
+    stopCurrentAudio();
+    
+    // Reset speech recognition
+    if (listeningRecognitionRef.current) {
+      listeningRecognitionRef.current.stop();
+      listeningRecognitionRef.current = null;
+    }
+    
+    // Restart listening if it should be active
+    if (isListening) {
+      console.log('🚀 Restarting listening after reset...');
+      setTimeout(() => {
+        if (isListening) {
+          startContinuousListening();
+        }
+      }, 2000);
+    }
+  };
+
+  // Auto-reset if locks get stuck (every 30 seconds)
+  React.useEffect(() => {
+    const resetInterval = setInterval(() => {
+      if (isListening && (isProcessingMatch || isAudioPlaying)) {
+        const now = Date.now();
+        const timeSinceLastProcess = now - lastProcessedTime;
+        
+        // If we've been locked for more than 30 seconds, reset
+        if (timeSinceLastProcess > 30000) {
+          console.log('⚠️ Auto-reset triggered - system appears stuck');
+          resetAllSystems();
+        }
+      }
+    }, 10000); // Check every 10 seconds
+    
+    return () => clearInterval(resetInterval);
+  }, [isListening, isProcessingMatch, isAudioPlaying, lastProcessedTime]);
+
+  // Calculate similarity between two phrases (0-1, where 1 is identical)
+  const calculateSimilarity = (phrase1: string, phrase2: string): number => {
+    if (!phrase1 || !phrase2) return 0;
+    
+    // Simple word-based similarity
+    const words1 = phrase1.toLowerCase().split(' ').filter(w => w.length > 2);
+    const words2 = phrase2.toLowerCase().split(' ').filter(w => w.length > 2);
+    
+    if (words1.length === 0 || words2.length === 0) return 0;
+    
+    const commonWords = words1.filter(word => 
+      words2.some(w => w.includes(word) || word.includes(w))
+    );
+    
+    return commonWords.length / Math.max(words1.length, words2.length);
+  };
+
+  // Extract clean phrases from concatenated speech recognition text (simplified)
+  const extractCleanPhrases = (text: string): string[] => {
+    const lowerText = text.toLowerCase().trim();
+    console.log(`🧹 Processing input: "${lowerText}"`);
+    
+    // Skip empty or very short text
+    if (!lowerText || lowerText.length < 3) {
+      console.log('❌ Text too short');
+      return [];
+    }
+    
+    // Skip ONLY obvious complete response echoes (be very specific)
+    if (lowerText.includes('don\'t worry i have your keys') || 
+        lowerText.includes('go look at that later') ||
+        lowerText.includes('bill\'s money buy me sell')) {
+      console.log('❌ Contains complete response echo');
+      return [];
+    }
+    
+    // SIMPLE APPROACH: Just use the input as-is if it's reasonable length
+    if (lowerText.length <= 100) {
+      // Clean up common prefixes (names, etc.)
+      const cleanedText = lowerText
+        .replace(/^(linda|mom|dad|hey|hello|hi|um|uh),?\s*/i, '') // Remove name prefixes
+        .replace(/\s+/g, ' ') // Normalize spaces
+        .trim();
+      
+      const finalText = cleanedText.length >= 3 ? cleanedText : lowerText;
+      console.log(`✅ Using input: "${finalText}" (cleaned from "${lowerText}")`);
+      return [finalText];
+    }
+    
+    // For longer text, try to find the first question-like segment
+    const segments = lowerText.split(/\s+/);
+    let bestPhrase = '';
+    
+    // Look for question patterns starting with common words
+    for (let i = 0; i < segments.length - 2; i++) {
+      const word = segments[i];
+      if (['where', 'what', 'how', 'when', 'why', 'can', 'could', 'i'].includes(word)) {
+        // Take up to 8 words from this point
+        const phrase = segments.slice(i, i + 8).join(' ');
+        if (phrase.length >= 5 && phrase.length <= 50) {
+          bestPhrase = phrase;
+          break;
+        }
+      }
+    }
+    
+    const result = bestPhrase ? [bestPhrase] : [lowerText.slice(0, 50)];
+    console.log(`✅ Extracted phrase: "${result[0]}"`);
+    return result;
+  };
+
+  // Check if spoken text matches any recorded questions (with phrase extraction)
+  const checkForQuestionMatch = (spokenText: string) => {
+    console.log('🔍 Raw speech input:', spokenText);
+    
+    const now = Date.now();
+    
+    // 🚫 GLOBAL PROCESSING LOCK: Skip if we're already processing a match
+    if (isProcessingMatch) {
+      console.log('🚫 Skipping - already processing a match');
+      return;
+    }
+    
+    // 🔒 AUDIO LOCK: Skip if audio is currently playing
+    if (isAudioPlaying || currentlyPlaying) {
+      console.log('🚫 Skipping - audio already playing');
+      return;
+    }
+    
+    // 📝 EXTRACT CLEAN PHRASES: Get meaningful phrases from concatenated text
+    const cleanPhrases = extractCleanPhrases(spokenText);
+    
+    if (cleanPhrases.length === 0) {
+      console.log('🚫 No clean phrases extracted');
+      return;
+    }
+    
+    const lowerSpoken = cleanPhrases[0]; // Use the most recent clean phrase
+    console.log('🎯 Processing clean phrase:', lowerSpoken);
+    
+    // 🛡️ AGGRESSIVE DEBOUNCING: Skip if very similar phrase was just processed
+    const timeSinceLastProcess = now - lastProcessedTime;
+    const phraseSimilarity = calculateSimilarity(lowerSpoken, lastProcessedPhrase);
+    
+    // More aggressive similarity detection for key-related phrases
+    const isKeyPhrase = lowerSpoken.includes('key');
+    const wasRecentKeyPhrase = lastProcessedPhrase.includes('key');
+    const similarityThreshold = (isKeyPhrase && wasRecentKeyPhrase) ? 0.4 : 0.6;
+    const timeThreshold = (isKeyPhrase && wasRecentKeyPhrase) ? 8000 : 5000;
+    
+    if (timeSinceLastProcess < timeThreshold && phraseSimilarity > similarityThreshold) {
+      console.log('🚫 Skipping - too similar to recent phrase:', { 
+        similarity: phraseSimilarity.toFixed(2), 
+        timeSince: timeSinceLastProcess,
+        threshold: similarityThreshold
+      });
+      return;
+    }
+    
+    // 🕐 BATCH PROCESSING: Clear any pending timeout and set a new one
+    if (processingTimeoutRef.current) {
+      clearTimeout(processingTimeoutRef.current);
+    }
+    
+    processingTimeoutRef.current = setTimeout(() => {
+      processQuestionMatchInternal(lowerSpoken, now);
+    }, 1200); // Even longer delay to prevent overlaps
+  };
+
+  // Internal function that actually processes the question match
+  const processQuestionMatchInternal = (lowerSpoken: string, timestamp: number) => {
+    console.log('⚡ Processing batched match:', lowerSpoken);
+    
+    // Set processing lock
+    setIsProcessingMatch(true);
+    
+    // Update debouncing state
+    setLastProcessedPhrase(lowerSpoken);
+    setLastProcessedTime(timestamp);
+    
+    const now = Date.now(); // Get current time for cooldown calculations
     
     // Find matching questions using simple keyword matching
     const matchedQuestions = recordings.filter(recording => {
       const lowerQuestion = recording.question.toLowerCase();
       
-      // Simple keyword matching - check if key words appear in both
+      // 🕒 COOLDOWN: Skip if this question was triggered recently
+      if (recording.lastTriggered) {
+        const timeSinceLastTrigger = now - new Date(recording.lastTriggered).getTime();
+        if (timeSinceLastTrigger < 8000) { // 8 second cooldown per question
+          console.log(`🕒 Question "${recording.question}" in cooldown (${timeSinceLastTrigger}ms ago)`);
+          return false;
+        }
+      }
+      
+      // FLEXIBLE MATCHING: Support variations while preventing concatenation
       const spokenWords = lowerSpoken.split(' ').filter(word => word.length > 2);
       const questionWords = lowerQuestion.split(' ').filter(word => word.length > 2);
       
-      // Count matching words
+      // Skip if phrase is VERY long (likely concatenated speech)
+      if (spokenWords.length > 15) { // Much more generous limit
+        console.log(`🚫 Phrase too long (${spokenWords.length} words) - likely concatenated`);
+        return false;
+      }
+      
+      // Count matching words (including partial matches)
       const matchingWords = spokenWords.filter(word => 
-        questionWords.some(qWord => qWord.includes(word) || word.includes(qWord))
+        questionWords.some(qWord => 
+          qWord.includes(word) || 
+          word.includes(qWord) ||
+          // Handle common variations
+          (qWord === 'keys' && ['key', 'car', 'house', 'door'].includes(word))
+        )
       );
       
-      // Consider it a match if at least 50% of words match
-      const matchPercentage = matchingWords.length / Math.min(spokenWords.length, questionWords.length);
-      return matchPercentage >= 0.5;
+      // FLEXIBLE REQUIREMENTS: Support phrase variations and short phrases
+      const coreWords = ['where', 'are', 'my', 'keys']; 
+      const hasCoreStructure = coreWords.filter(core => 
+        spokenWords.some(spoken => spoken.includes(core))
+      ).length >= 2; // At least 2 core words must match
+      
+      // Special handling for very short phrases like "my keys"
+      const isShortKeyPhrase = spokenWords.length <= 3 && 
+        (spokenWords.includes('keys') || spokenWords.includes('key')) &&
+        (spokenWords.includes('my') || spokenWords.includes('car'));
+      
+      const matchPercentage = matchingWords.length / questionWords.length;
+      const hasEnoughMatches = matchingWords.length >= 2 || isShortKeyPhrase;
+      const hasDecentPercentage = matchPercentage >= 0.3; // Even more flexible
+      
+      console.log(`🔍 Matching "${recording.question}": ${matchingWords.length}/${questionWords.length} words (${(matchPercentage*100).toFixed(0)}%) - Core: ${hasCoreStructure} - Short: ${isShortKeyPhrase}`);
+      
+      return hasEnoughMatches && (hasDecentPercentage || hasCoreStructure || isShortKeyPhrase);
     });
     
     if (matchedQuestions.length > 0) {
       const question = matchedQuestions[0]; // Use first match
-      console.log('Question matched:', question.question);
+      console.log('✅ Question matched:', question.question);
       
-             // Increment trigger count
-       const updatedRecordings = recordings.map(r => 
-         r.id === question.id 
-           ? { ...r, triggerCount: r.triggerCount + 1, lastTriggered: new Date() }
-           : r
-       );
-       saveRecordings(updatedRecordings); // Note: not awaiting to avoid blocking
+      // Set audio playing lock
+      setIsAudioPlaying(true);
+      
+      // Increment trigger count
+      const updatedRecordings = recordings.map(r => 
+        r.id === question.id 
+          ? { ...r, triggerCount: r.triggerCount + 1, lastTriggered: new Date() }
+          : r
+      );
+      saveRecordings(updatedRecordings); // Note: not awaiting to avoid blocking
       
       // Find a response to play
       const availableResponses = (['comfort', 'redirect', 'acknowledge'] as ResponseCategory[])
@@ -342,14 +590,18 @@ function App() {
            
            audio.onended = () => {
              setCurrentlyPlaying('');
+             setIsAudioPlaying(false); // 🔓 Release audio lock
+             setIsProcessingMatch(false); // 🔓 Release processing lock
              URL.revokeObjectURL(audioUrl);
              currentAudioRef.current = null;
-             console.log('✅ Audio playback completed');
+             console.log('✅ Audio playback completed - all locks released');
            };
            
            audio.onerror = () => {
              console.error('❌ Audio playback error');
              setCurrentlyPlaying('');
+             setIsAudioPlaying(false); // 🔓 Release audio lock
+             setIsProcessingMatch(false); // 🔓 Release processing lock
              URL.revokeObjectURL(audioUrl);
              currentAudioRef.current = null;
            };
@@ -364,6 +616,8 @@ function App() {
              }).catch(error => {
                console.log('⚠️ Auto-play blocked, showing manual prompt');
                setCurrentlyPlaying('');
+               setIsAudioPlaying(false); // 🔓 Release audio lock
+               setIsProcessingMatch(false); // 🔓 Release processing lock
                currentAudioRef.current = null;
                
                if (response.audioBlob) {
@@ -381,7 +635,11 @@ function App() {
          console.log(`✅ MATCH DETECTED: "${question.question}" → Playing: "${response?.text}"`);
       } else {
         console.log('No recorded responses available for this question');
+        setIsProcessingMatch(false); // 🔓 Release processing lock
       }
+    } else {
+      console.log('No questions matched');
+      setIsProcessingMatch(false); // 🔓 Release processing lock
     }
   };
 
@@ -403,6 +661,8 @@ function App() {
     
     audio.onended = () => {
       setCurrentlyPlaying('');
+      setIsAudioPlaying(false); // 🔓 Release audio lock
+      setIsProcessingMatch(false); // 🔓 Release processing lock
       URL.revokeObjectURL(audioUrl);
       currentAudioRef.current = null;
     };
